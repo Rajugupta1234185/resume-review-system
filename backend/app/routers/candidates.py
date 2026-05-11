@@ -52,6 +52,15 @@ def post_score_to_candidate(
     )
 
 
+@router.get("/candidates/{candidate_id}/scores")
+def get_scores_for_candidate(
+    candidate_id: int = Path(ge=1),
+    session: Session = Depends(get_session),
+    user=Depends(get_current_user),
+):
+    return candidates.Get_Scores_For_Candidate(session, candidate_id, user)
+
+
 @router.post(
     "/candidates/{candidate_id}/summary",
     dependencies=[Depends(get_current_user)],
@@ -61,7 +70,7 @@ async def post_candidate_summary(
     session: Session = Depends(get_session),
     user = Depends(get_current_user)
 ):
-    return await candidates.Generate_Candidate_Summary(session, candidate_id)
+    return await candidates.Generate_Candidate_Summary(session, candidate_id, user)
 
 
 @router.get(
@@ -76,7 +85,7 @@ async def stream_candidate_scores(
     user = Depends(get_current_user)
 ):
     return StreamingResponse(
-        candidates.Stream_Candidate_Scores(request, session, candidate_id),
+        candidates.Stream_Candidate_Scores(request, session, candidate_id, user),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

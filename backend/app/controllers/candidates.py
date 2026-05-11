@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timezone
 
 from sqlmodel import Session, select, func
-from app.models import Candidate, Score
+from app.models import Candidate, Role, Score
 from app.schemas.candidates import CreateScorePayload, CreateCandidatePayload
 from fastapi import HTTPException, Request
 
@@ -75,6 +75,18 @@ def Get_Candidate_By_Id ( session : Session , id : int):
     return req_candidate
 
 
+def Get_Scores_For_Candidate(session: Session, candidate_id: int, current_user: dict):
+    if not session.get(Candidate, candidate_id):
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    stmt = select(Score).where(Score.candidate_id == candidate_id)
+    # Reviewers only see their own scores; admins see everyone's.
+    if current_user["role"] != Role.admin.value:
+        stmt = stmt.where(Score.reviewer_id == current_user["user_id"])
+
+    return session.exec(stmt.order_by(Score.id)).all()
+
+
 def Create_Score_To_User(
     session: Session,
     candidate_id: int,
@@ -101,15 +113,17 @@ def Create_Score_To_User(
     return new_score
 
 
-async def Generate_Candidate_Summary(session: Session, candidate_id: int):
+async def Generate_Candidate_Summary(session: Session, candidate_id: int, current_user: dict):
     candidate = session.get(Candidate, candidate_id)
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
 
-    # collect this candidate's scores to feed the "LLM"
-    scores = session.exec(
-        select(Score).where(Score.candidate_id == candidate_id)
-    ).all()
+    # Reviewers' summary aggregates only their own scores so they can't infer
+    # what other reviewers gave. Admins see the aggregate across everyone.
+    stmt = select(Score).where(Score.candidate_id == candidate_id)
+    if current_user["role"] != Role.admin.value:
+        stmt = stmt.where(Score.reviewer_id == current_user["user_id"])
+    scores = session.exec(stmt).all()
     avg = (sum(s.score for s in scores) / len(scores)) if scores else 0
 
     # simulate an async LLM call
@@ -129,12 +143,13 @@ async def Generate_Candidate_Summary(session: Session, candidate_id: int):
 
 
 async def Stream_Candidate_Scores(
-    request: Request, session: Session, candidate_id: int
+    request: Request, session: Session, candidate_id: int, current_user: dict
 ):
     # 404 up front before opening the stream
     if not session.get(Candidate, candidate_id):
         raise HTTPException(status_code=404, detail="Candidate not found")
 
+    is_admin = current_user["role"] == Role.admin.value
     last_id = 0
 
     while True:
@@ -142,11 +157,13 @@ async def Stream_Candidate_Scores(
         if await request.is_disconnected():
             break
 
-        new_scores = session.exec(
-            select(Score)
-            .where(Score.candidate_id == candidate_id, Score.id > last_id)
-            .order_by(Score.id)
-        ).all()
+        stmt = select(Score).where(
+            Score.candidate_id == candidate_id, Score.id > last_id
+        )
+        if not is_admin:
+            # reviewers only see their own scores
+            stmt = stmt.where(Score.reviewer_id == current_user["user_id"])
+        new_scores = session.exec(stmt.order_by(Score.id)).all()
 
         for s in new_scores:
             last_id = s.id
